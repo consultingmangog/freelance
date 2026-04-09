@@ -1,5 +1,8 @@
 name: Daily Scrape
 
+# Trigger: scheduled cron + manual dispatch from GitHub Actions UI or
+# from the Streamlit dashboard sidebar (workflow_dispatch API).
+
 on:
   schedule:
     # 07:00 UTC every day (~ 08:00 Paris winter / 09:00 summer)
