@@ -1,1 +1,1 @@
-id,date_scraped,published,title,company,source,url,summary,keywords,matched_skills,score,match_pct,match_grade
+id,date_scraped,published,title,company,source,source_url,url,summary,keywords,matched_skills,score,match_pct,match_grade

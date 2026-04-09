@@ -37,6 +37,7 @@ CSV_FIELDS = [
     "title",
     "company",
     "source",
+    "source_url",
     "url",
     "summary",
     "keywords",
@@ -54,26 +55,32 @@ RSS_SOURCES: list[dict[str, str]] = [
     {
         "name": "Remotive",
         "url": "https://remotive.com/remote-jobs/feed",
+        "homepage": "https://remotive.com",
     },
     {
         "name": "WeWorkRemotely",
         "url": "https://weworkremotely.com/categories/remote-programming-jobs.rss",
+        "homepage": "https://weworkremotely.com",
     },
     {
         "name": "RemoteOK",
         "url": "https://remoteok.com/remote-dev-jobs.rss",
+        "homepage": "https://remoteok.com",
     },
     {
         "name": "Himalayas",
         "url": "https://himalayas.app/jobs/rss?search=data+engineer",
+        "homepage": "https://himalayas.app",
     },
     {
         "name": "Jobicy",
         "url": "https://jobicy.com/?feed=job_feed",
+        "homepage": "https://jobicy.com",
     },
     {
         "name": "Codeur",
         "url": "https://www.codeur.com/projects.rss",
+        "homepage": "https://www.codeur.com",
     },
 ]
 
@@ -263,7 +270,7 @@ def fetch_feed(url: str) -> list:
     return list(parsed.entries)
 
 
-def normalize_entry(entry, source_name: str) -> dict | None:
+def normalize_entry(entry, source_name: str, source_homepage: str) -> dict | None:
     """Turn a feedparser entry into a CSV row dict, or None if it should be dropped."""
     title = clean_text(entry.get("title"))
     url = entry.get("link") or ""
@@ -301,6 +308,7 @@ def normalize_entry(entry, source_name: str) -> dict | None:
         "title": title,
         "company": company,
         "source": source_name,
+        "source_url": source_homepage,
         "url": url,
         "summary": summary[:500],
         "keywords": ", ".join(matched_keywords),
@@ -354,7 +362,7 @@ def main() -> None:
         logger.info("  → %d entries from %s", len(entries), source["name"])
 
         for entry in entries:
-            row = normalize_entry(entry, source["name"])
+            row = normalize_entry(entry, source["name"], source["homepage"])
             if row is None:
                 continue
             if row["id"] in existing:

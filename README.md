@@ -119,6 +119,35 @@ L'URL publique de type `https://<ton-app>.streamlit.app` est générée en
 quelques secondes. Chaque commit du scraper (via GitHub Actions) rafraîchit
 automatiquement le CSV ; le cache Streamlit expire toutes les 5 minutes.
 
+### 4. (Optionnel) Trigger manuel du scraper depuis Streamlit
+
+Le dashboard expose deux boutons dans la sidebar :
+
+- **⟳ Rafraîchir** — vide le cache et relit `missions.csv` immédiatement.
+- **▶ Scraper** — déclenche le workflow `Daily Scrape` via l'API GitHub
+  (`workflow_dispatch`). Nécessite un token côté Streamlit Cloud.
+
+Pour activer le bouton **▶ Scraper** :
+
+1. Crée un Personal Access Token GitHub (fine-grained) avec la permission
+   **Actions: Read and write** sur le dépôt. https://github.com/settings/personal-access-tokens/new
+2. Dans Streamlit Community Cloud → ton app → **Settings → Secrets**, ajoute :
+
+   ```toml
+   GITHUB_TOKEN = "ghp_xxxxxxxxxxxx"
+   GITHUB_REPO  = "consultingmangog/freelance"
+   GITHUB_BRANCH = "claude/job-board-automation-yTvBX"   # optionnel
+   ```
+
+3. Sauvegarde. Le bouton fonctionne instantanément, sans redéployer.
+
+Sans ces secrets, le bouton affiche simplement un message t'invitant à les
+configurer — l'app continue de fonctionner normalement.
+
+Tu peux aussi toujours déclencher le workflow manuellement depuis l'onglet
+**Actions → Daily Scrape → Run workflow** sur GitHub, ce qui ne nécessite
+aucun secret.
+
 ## Dépendances
 
 Voir `requirements.txt` :
