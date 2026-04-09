@@ -1,9 +1,14 @@
 """
 scraper.py — Freelance Job Board scraper.
 
-Fetches RSS feeds from a curated list of remote-tech job boards, filters offers
-by inclusion keywords, computes an experience-match score, and stores results
-incrementally in ``missions.csv``.
+Fetches RSS feeds from a curated list of remote-tech job boards, scores each
+offer against the user's real experience (loaded from ``profile.yml``), and
+stores results incrementally in ``missions.csv``.
+
+Scoring is fully content-based: no title weighting. The title is only used as
+part of the searchable text, not as a special signal. The full offer text
+(title + summary + company) is matched against the profile's core_skills,
+secondary_skills, domains, green_flags and red_flags.
 
 Designed to run unattended in GitHub Actions. 100% RSS (no Cloudflare-protected
 HTML endpoints) to keep CI IPs from being blocked.
@@ -15,13 +20,14 @@ import csv
 import hashlib
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import feedparser
 import requests
+import yaml
 from bs4 import BeautifulSoup
 
 # ---------------------------------------------------------------------------
@@ -29,6 +35,7 @@ from bs4 import BeautifulSoup
 # ---------------------------------------------------------------------------
 
 CSV_PATH = Path("missions.csv")
+PROFILE_PATH = Path("profile.yml")
 
 CSV_FIELDS = [
     "id",
@@ -84,61 +91,6 @@ RSS_SOURCES: list[dict[str, str]] = [
     },
 ]
 
-# --- Filters ---------------------------------------------------------------
-
-# Stage 1 — inclusion keywords (an offer must match at least one to be
-# considered). Intentionally broad; the scoring step refines further.
-INCLUSION_KEYWORDS = [
-    "data engineer",
-    "analytics engineer",
-    "gcp",
-    "google cloud",
-    "bigquery",
-    "hive",
-    "hadoop",
-    "python",
-    "remote",
-    "dbt",
-    "snowflake",
-    "airflow",
-    "data warehouse",
-    "etl",
-]
-
-# Stage 2 — scoring skills (each unique occurrence adds +2 to score).
-CORE_SKILLS = [
-    "dbt",
-    "gcp",
-    "google cloud",
-    "bigquery",
-    "hive",
-    "hadoop",
-    "snowflake",
-    "redshift",
-    "data warehouse",
-    "dwh",
-    "airflow",
-]
-
-REMOTE_TERMS = ["remote", "télétravail", "teletravail", "fully remote", "100% remote"]
-SENIORITY_TERMS = ["senior", "lead", "confirmé", "confirme", "principal", "staff"]
-ONSITE_TERMS = [
-    "on-site",
-    "on site",
-    "onsite",
-    "présentiel",
-    "presentiel",
-    "sur site",
-    "no remote",
-    "no-remote",
-]
-
-# Grade A threshold: only keep offers that pass ≥80 % match.
-# Score ≥ 8 corresponds to match_pct ≥ 80 (= grade A) via score*10 normalization.
-# This guarantees "perfect match" semantics: title is Data/Analytics Engineer,
-# multiple core skills (GCP/BigQuery/dbt/Airflow/…) match, and remote is present.
-MIN_SCORE_TO_KEEP = 8
-
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -151,6 +103,76 @@ logger = logging.getLogger("scraper")
 
 
 # ---------------------------------------------------------------------------
+# Profile loading
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Profile:
+    """Parsed view of profile.yml used for scoring."""
+
+    role_signals: list[str] = field(default_factory=list)
+    core_skills: dict[str, int] = field(default_factory=dict)
+    secondary_skills: dict[str, int] = field(default_factory=dict)
+    domains: dict[str, int] = field(default_factory=dict)
+    red_flags: list[str] = field(default_factory=list)
+    green_flags: list[str] = field(default_factory=list)
+    normalizer: int = 18
+    min_score: int = 14
+    grade_thresholds: dict[str, int] = field(
+        default_factory=lambda: {"A": 80, "B": 50, "C": 30, "D": 0}
+    )
+
+
+def _weighted_dict(section: Any) -> dict[str, int]:
+    """Accept either {key: {weight: n}} or {key: n} and return {key: n}."""
+    if not section:
+        return {}
+    out: dict[str, int] = {}
+    for key, value in section.items():
+        if isinstance(value, dict):
+            out[str(key).lower()] = int(value.get("weight", 1))
+        else:
+            out[str(key).lower()] = int(value)
+    return out
+
+
+def _flag_list(section: Any) -> list[str]:
+    if not section:
+        return []
+    return [str(item).lower() for item in section]
+
+
+def load_profile(path: Path) -> Profile:
+    """Read profile.yml and return a Profile instance."""
+    if not path.exists():
+        logger.warning("profile.yml not found — scoring will be empty")
+        return Profile()
+
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    scoring = data.get("scoring") or {}
+    grades = scoring.get("grades") or {}
+    return Profile(
+        role_signals=_flag_list(data.get("role_signals")),
+        core_skills=_weighted_dict(data.get("core_skills")),
+        secondary_skills=_weighted_dict(data.get("secondary_skills")),
+        domains=_weighted_dict(data.get("domains")),
+        red_flags=_flag_list(data.get("red_flags")),
+        green_flags=_flag_list(data.get("green_flags")),
+        normalizer=int(scoring.get("normalizer", 18)),
+        min_score=int(scoring.get("min_score", 14)),
+        grade_thresholds={
+            "A": int(grades.get("A", 80)),
+            "B": int(grades.get("B", 50)),
+            "C": int(grades.get("C", 30)),
+            "D": int(grades.get("D", 0)),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -158,7 +180,10 @@ logger = logging.getLogger("scraper")
 @dataclass
 class ScoreResult:
     score: int
+    match_pct: int
     matched_skills: list[str]
+    matched_domains: list[str]
+    matched_flags: list[str]
     rejected: bool
     reject_reason: str = ""
 
@@ -177,73 +202,136 @@ def mission_id(url: str, title: str) -> str:
     return digest[:12]
 
 
-def find_inclusion_keywords(text: str) -> list[str]:
-    low = text.lower()
-    return [kw for kw in INCLUSION_KEYWORDS if kw in low]
+def _strip_negations(text: str, negated_terms: list[str]) -> str:
+    """Remove phrases like 'no remote' before substring-checking for 'remote'."""
+    out = text
+    for neg in negated_terms:
+        out = out.replace(neg, "")
+    return out
 
 
-def score_offer(title: str, summary: str, company: str) -> ScoreResult:
-    """Compute match score and rejection status for an offer."""
-    title_low = title.lower()
+# Word-boundary match cache. A plain ``term in text`` check is too noisy for
+# short terms: "r" would match in "senior", "hr" in "through", etc. Using
+# \b boundaries filters these out while keeping multi-word matches like
+# "data lake" or "data engineer" working correctly.
+_pattern_cache: dict[str, re.Pattern] = {}
+
+
+def _matches(term: str, text_lower: str) -> bool:
+    pat = _pattern_cache.get(term)
+    if pat is None:
+        pat = re.compile(r"\b" + re.escape(term) + r"\b")
+        _pattern_cache[term] = pat
+    return pat.search(text_lower) is not None
+
+
+def score_offer(
+    title: str,
+    summary: str,
+    company: str,
+    profile: Profile,
+    red_flag_text: str | None = None,
+) -> ScoreResult:
+    """Score an offer purely on content match against the user profile.
+
+    The scoring is symmetric across title/summary/company — the title has no
+    special weight. What matters is which skills, domains and flags from the
+    profile appear in the full text.
+
+    ``red_flag_text`` lets the caller pass a *different* (usually shorter)
+    text for red-flag checks. This is used during hydration: the red flags
+    are checked against the condensed RSS title+summary (which carries the
+    essential role requirements), while positive scoring runs on the full
+    hydrated page. Without this distinction, every full-page dump would hit
+    a stray "aws" in a footer and get rejected.
+    """
     body_low = f"{title} {summary} {company}".lower()
+    red_flag_body = (red_flag_text or f"{title} {summary}").lower()
 
-    # Hard rejection rules
-    has_gcp = any(k in body_low for k in ("gcp", "google cloud", "bigquery"))
-    has_aws = "aws" in body_low or "amazon web services" in body_low
-    has_azure = "azure" in body_low
-    has_onsite = any(k in body_low for k in ONSITE_TERMS)
-
-    # Check remote AFTER stripping negated forms ("no remote", "not remote"),
-    # otherwise naive substring matching flips has_remote to True when the
-    # offer explicitly says "no remote".
-    body_for_remote = body_low
-    for negation in ("no remote", "no-remote", "not remote", "sans remote"):
-        body_for_remote = body_for_remote.replace(negation, "")
-    has_remote = any(k in body_for_remote for k in REMOTE_TERMS)
-
-    if has_aws and not has_gcp:
-        return ScoreResult(0, [], rejected=True, reject_reason="aws-only")
-    if has_azure and not has_gcp:
-        return ScoreResult(0, [], rejected=True, reject_reason="azure-only")
-    if has_onsite and not has_remote:
-        return ScoreResult(0, [], rejected=True, reject_reason="onsite-only")
-
-    score = 0
-
-    # Role match (primary signal — title weighted more)
-    if "data engineer" in title_low:
-        score += 3
-    elif "analytics engineer" in title_low:
-        score += 2
-    elif "data" in title_low and any(
-        k in title_low for k in ("engineer", "pipeline", "platform")
+    # --- Role signal filter -------------------------------------------------
+    # Require at least one data-specific role signal in the offer text.
+    # This prevents non-data roles (Middleware, Backend, etc.) from passing
+    # simply because they mention Python/SQL/Oracle that the user also knows.
+    if profile.role_signals and not any(
+        _matches(sig, body_low) for sig in profile.role_signals
     ):
-        score += 1
+        return ScoreResult(
+            score=0,
+            match_pct=0,
+            matched_skills=[],
+            matched_domains=[],
+            matched_flags=[],
+            rejected=True,
+            reject_reason="no-role-signal",
+        )
 
-    # Core skills
+    # --- Hard rejection: red flags from profile -----------------------------
+    for flag in profile.red_flags:
+        if _matches(flag, red_flag_body):
+            return ScoreResult(
+                score=0,
+                match_pct=0,
+                matched_skills=[],
+                matched_domains=[],
+                matched_flags=[],
+                rejected=True,
+                reject_reason=f"red-flag:{flag}",
+            )
+
+    # --- Positive scoring ---------------------------------------------------
+    score = 0
     matched_skills: list[str] = []
-    for skill in CORE_SKILLS:
-        if skill in body_low and skill not in matched_skills:
+    matched_domains: list[str] = []
+    matched_flags: list[str] = []
+
+    # Core skills (weighted)
+    for skill, weight in profile.core_skills.items():
+        if _matches(skill, body_low):
             matched_skills.append(skill)
-            score += 2
+            score += weight
 
-    # Remote bonus
-    if has_remote:
-        score += 2
+    # Secondary skills
+    for skill, weight in profile.secondary_skills.items():
+        if _matches(skill, body_low):
+            matched_skills.append(skill)
+            score += weight
 
-    # Seniority bonus
-    if any(term in body_low for term in SENIORITY_TERMS):
-        score += 1
+    # Domains (weighted, typically +2)
+    for domain, weight in profile.domains.items():
+        if _matches(domain, body_low):
+            matched_domains.append(domain)
+            score += weight
 
-    return ScoreResult(score=score, matched_skills=matched_skills, rejected=False)
+    # Green flags (+1 each). Strip explicit negations like "no remote" before
+    # checking the remote group.
+    body_for_flags = _strip_negations(
+        body_low, ["no remote", "no-remote", "not remote", "sans remote"]
+    )
+    for flag in profile.green_flags:
+        if _matches(flag, body_for_flags):
+            matched_flags.append(flag)
+            score += 1
+
+    # Normalize score → match_pct
+    normalizer = max(profile.normalizer, 1)
+    match_pct = min(100, round(score * 100 / normalizer))
+
+    return ScoreResult(
+        score=score,
+        match_pct=match_pct,
+        matched_skills=matched_skills,
+        matched_domains=matched_domains,
+        matched_flags=matched_flags,
+        rejected=False,
+    )
 
 
-def grade_from_pct(pct: int) -> str:
-    if pct >= 80:
+def grade_from_pct(pct: int, thresholds: dict[str, int]) -> str:
+    if pct >= thresholds["A"]:
         return "A"
-    if pct >= 50:
+    if pct >= thresholds["B"]:
         return "B"
-    if pct >= 30:
+    if pct >= thresholds["C"]:
         return "C"
     return "D"
 
@@ -274,8 +362,50 @@ def fetch_feed(url: str) -> list:
     return list(parsed.entries)
 
 
-def normalize_entry(entry, source_name: str, source_homepage: str) -> dict | None:
-    """Turn a feedparser entry into a CSV row dict, or None if it should be dropped."""
+def fetch_page_text(url: str, timeout: int = 10) -> str:
+    """Download the full HTML page of an offer and extract visible text.
+
+    Returns empty string on any failure — the caller falls back to the
+    original RSS summary. Used to enrich short RSS excerpts so that the
+    profile-based content scoring has enough signal to work with.
+    """
+    try:
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "text/html,application/xhtml+xml",
+            },
+            timeout=timeout,
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        logger.debug("Hydration failed for %s: %s", url, exc)
+        return ""
+
+    soup = BeautifulSoup(response.content, "html.parser")
+    # Drop non-content elements.
+    for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
+        tag.decompose()
+    text = soup.get_text(" ", strip=True)
+    text = re.sub(r"\s+", " ", text).strip()
+    # Cap hydration length to avoid passing huge blobs through the scoring loop.
+    return text[:5000]
+
+
+def normalize_entry(
+    entry,
+    source_name: str,
+    source_homepage: str,
+    profile: Profile,
+    hydrate: bool = True,
+) -> dict | None:
+    """Turn a feedparser entry into a CSV row dict, or None if it should be dropped.
+
+    If ``hydrate`` is True, offers that pass the cheap title-based role filter
+    are re-scored against the full page HTML (not just the RSS summary).
+    """
     title = clean_text(entry.get("title"))
     url = entry.get("link") or ""
     if not title or not url:
@@ -284,26 +414,51 @@ def normalize_entry(entry, source_name: str, source_homepage: str) -> dict | Non
     summary = clean_text(entry.get("summary") or entry.get("description") or "")
     company = clean_text(entry.get("author") or "") or source_name
 
-    combined = f"{title} {summary} {company}"
-    matched_keywords = find_inclusion_keywords(combined)
-    if not matched_keywords:
+    # Cheap pre-filter: the RSS title+summary must contain a role signal.
+    # If it doesn't, the offer isn't data-related and we drop it immediately
+    # without wasting an HTTP fetch on hydration.
+    cheap_text = f"{title} {summary} {company}".lower()
+    has_role_signal_cheap = any(
+        _matches(sig, cheap_text) for sig in profile.role_signals
+    )
+    if not has_role_signal_cheap:
         return None
 
-    result = score_offer(title, summary, company)
+    # Hydrate with full page HTML so the scoring has rich signal (RSS
+    # summaries are often truncated to 150-200 chars, which is too thin for
+    # profile-based content matching to score confidently).
+    if hydrate:
+        full_text = fetch_page_text(url)
+        scored_summary = full_text if full_text else summary
+    else:
+        scored_summary = summary
+
+    # Red flags checked on the condensed title+summary only — the hydrated
+    # full page is usually too noisy (footers, related-jobs, etc.).
+    result = score_offer(
+        title,
+        scored_summary,
+        company,
+        profile,
+        red_flag_text=f"{title} {summary}",
+    )
     if result.rejected:
         logger.debug("Rejected '%s' (%s)", title[:60], result.reject_reason)
         return None
-    if result.score < MIN_SCORE_TO_KEEP:
+    if result.score < profile.min_score:
         return None
 
-    match_pct = min(100, round(result.score * 10))
-    grade = grade_from_pct(match_pct)
+    grade = grade_from_pct(result.match_pct, profile.grade_thresholds)
 
     published = ""
     for key in ("published", "updated", "pubDate"):
         if entry.get(key):
             published = str(entry.get(key))
             break
+
+    # Pack keywords/skills/domains/flags into readable columns.
+    all_matched = result.matched_skills + result.matched_domains
+    keyword_label = ", ".join(all_matched + result.matched_flags)
 
     return {
         "id": mission_id(url, title),
@@ -315,10 +470,10 @@ def normalize_entry(entry, source_name: str, source_homepage: str) -> dict | Non
         "source_url": source_homepage,
         "url": url,
         "summary": summary[:500],
-        "keywords": ", ".join(matched_keywords),
-        "matched_skills": ", ".join(result.matched_skills),
+        "keywords": keyword_label,
+        "matched_skills": ", ".join(all_matched),
         "score": result.score,
-        "match_pct": match_pct,
+        "match_pct": result.match_pct,
         "match_grade": grade,
     }
 
@@ -328,10 +483,10 @@ def normalize_entry(entry, source_name: str, source_homepage: str) -> dict | Non
 # ---------------------------------------------------------------------------
 
 
-def load_existing(path: Path) -> dict[str, dict]:
+def load_existing(path: Path, min_score: int) -> dict[str, dict]:
     """Load previously scraped rows, dropping any that no longer meet the
-    current MIN_SCORE_TO_KEEP threshold. This lets threshold changes take
-    effect naturally on the next run (old grade B/C/D rows get purged)."""
+    current ``min_score`` threshold. This lets profile/threshold changes take
+    effect naturally on the next run (old sub-threshold rows get purged)."""
     if not path.exists():
         return {}
     with path.open("r", encoding="utf-8", newline="") as f:
@@ -344,7 +499,7 @@ def load_existing(path: Path) -> dict[str, dict]:
                 score = int(row.get("score") or 0)
             except ValueError:
                 score = 0
-            if score < MIN_SCORE_TO_KEEP:
+            if score < min_score:
                 continue
             kept[row["id"]] = row
     return kept
@@ -371,8 +526,21 @@ def save(path: Path, rows: Iterable[dict]) -> None:
 
 
 def main() -> None:
-    existing = load_existing(CSV_PATH)
-    logger.info("Loaded %d existing missions", len(existing))
+    profile = load_profile(PROFILE_PATH)
+    logger.info(
+        "Loaded profile: %d core / %d secondary / %d domains / %d red / %d green "
+        "(min_score=%d, normalizer=%d)",
+        len(profile.core_skills),
+        len(profile.secondary_skills),
+        len(profile.domains),
+        len(profile.red_flags),
+        len(profile.green_flags),
+        profile.min_score,
+        profile.normalizer,
+    )
+
+    existing = load_existing(CSV_PATH, profile.min_score)
+    logger.info("Loaded %d existing missions (above threshold)", len(existing))
 
     new_count = 0
     for source in RSS_SOURCES:
@@ -380,7 +548,9 @@ def main() -> None:
         logger.info("  → %d entries from %s", len(entries), source["name"])
 
         for entry in entries:
-            row = normalize_entry(entry, source["name"], source["homepage"])
+            row = normalize_entry(
+                entry, source["name"], source["homepage"], profile
+            )
             if row is None:
                 continue
             if row["id"] in existing:

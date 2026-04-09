@@ -1,0 +1,203 @@
+# profile.yml — Profil utilisateur (source de vérité pour le scoring)
+#
+# Le scraper charge ce fichier à chaque run et score chaque offre par matching
+# de contenu (titre + résumé + société) contre les entrées ci-dessous. Le titre
+# n'est PAS pondéré séparément : seul le matching global compte.
+#
+# Formule :
+#   score = Σ core_skills matchés × leur poids
+#         + Σ secondary_skills matchés × 1
+#         + Σ domains matchés × 2
+#         + Σ green_flags matchés × 1
+#   Si un red_flag est matché → offre rejetée
+#   match_pct = min(100, round(score × 100 / 18))
+#   grade    = A ≥ 80 %, B 50-79 %, C 30-49 %, D < 30 %
+
+# Role signals — au moins UN de ces termes doit apparaître dans l'offre
+# (titre ou résumé), sinon elle est rejetée avant scoring. Ça évite qu'une
+# offre "Middleware Engineer" ou "Backend Engineer" passe juste parce qu'elle
+# mentionne Python + SQL + Oracle. Le titre n'est PAS scoré, mais la présence
+# d'au moins un signal de rôle est exigée.
+role_signals:
+  - data engineer
+  - data engineering
+  - analytics engineer
+  - data platform
+  - data lake
+  - datalake
+  - data warehouse
+  - datawarehouse
+  - dwh
+  - data pipeline
+  - data pipelines
+  - etl
+  - elt
+  - hadoop
+  - hive
+  - bigquery
+  - "big data"
+  - data architect
+  - data ops
+  - dataops
+  - data steward
+  - data quality
+  - data governance
+  - master data
+  - data integration
+  - data migration
+  - datalakehouse
+  - lakehouse
+
+# Technologies core — expérience de production solide
+# (chaque entrée a un "weight" = importance dans le scoring)
+core_skills:
+  # Stack EDF (Datalake RH, 5+ ans, 50+ flux)
+  hive:         {weight: 3, years: 5, context: "EDF Datalake RH, 50+ flux prod"}
+  hadoop:       {weight: 3, years: 5, context: "EDF HDFS"}
+  hdfs:         {weight: 3, years: 5, context: "EDF"}
+  "data lake":  {weight: 3, years: 5, context: "EDF Datalake RH central"}
+  datalake:     {weight: 3, years: 5, context: "EDF"}
+
+  # Langages (solides)
+  python:       {weight: 3, years: 5, context: "scripting analyse massive EDF"}
+  sql:          {weight: 3, years: 10, context: "Oracle + Hive"}
+  "oracle sql": {weight: 2, years: 6, context: "Orange, Bouygues, SNCF"}
+  oracle:       {weight: 2, years: 6}
+
+  # Ops / DevOps tooling
+  jenkins:      {weight: 1, years: 5, context: "EDF CI/CD"}
+  git:          {weight: 1, years: 10}
+  jira:         {weight: 1, years: 10}
+
+  # Data Engineering généraliste
+  etl:          {weight: 2, years: 5, context: "flux Hive EDF"}
+  "data engineering": {weight: 3, years: 10}
+  "data engineer":    {weight: 3, years: 10}
+
+# Technologies secondaires — touchées mais pas expert
+secondary_skills:
+  # GCP (atelier migration EDF, pas encore production deep)
+  gcp:          {weight: 1, years: 1, context: "atelier migration Hive→GCP"}
+  "google cloud": {weight: 1, years: 1}
+  bigquery:     {weight: 1, years: 1}
+  "vertex ai":  {weight: 1, years: 1, context: "EDF LLM"}
+
+  # IA / LLM (émergent)
+  llm:          {weight: 1, years: 1, context: "outil automatisation doc EDF"}
+  "large language model": {weight: 1, years: 1}
+  "prompt engineering":   {weight: 1, years: 1}
+
+  # Scripting secondaire
+  shell:        {weight: 1, years: 5, context: "Orange automation"}
+  bash:         {weight: 1, years: 5}
+  groovy:       {weight: 1, years: 3, context: "Bouygues robots"}
+  r:            {weight: 1, years: 2, context: "EDF INSEE"}
+
+  # Tooling data
+  confluence:   {weight: 1, years: 5}
+  sharepoint:   {weight: 1, years: 5}
+
+# Domaines métier — forte valeur quand ils matchent
+domains:
+  # RH (cœur de métier EDF, 5+ ans)
+  rh:                {weight: 2, context: "EDF Datalake RH"}
+  hr:                {weight: 2}
+  "human resources": {weight: 2}
+  sirh:              {weight: 2}
+  payroll:           {weight: 1}
+  paie:              {weight: 1}
+  "people analytics": {weight: 2}
+
+  # Télécoms (Bouygues + Orange, 5+ ans)
+  telecom:           {weight: 2, context: "Bouygues + Orange"}
+  telecoms:          {weight: 2}
+  telco:             {weight: 2}
+  "téléphonie":      {weight: 2}
+
+  # Énergie / Utilities (EDF)
+  energy:            {weight: 2, context: "EDF"}
+  "énergie":         {weight: 2}
+  utilities:         {weight: 2}
+  "utility":         {weight: 1}
+
+  # Transport (SNCF, plus court)
+  transport:         {weight: 1, context: "SNCF"}
+  railway:           {weight: 1}
+  sncf:              {weight: 1}
+
+# Red flags — rejets durs (offre supprimée immédiatement)
+red_flags:
+  # Cloud non maîtrisé
+  - aws
+  - amazon web services
+  - azure data factory
+  - azure synapse
+  # Présentiel / non-remote
+  - on-site
+  - on site
+  - onsite
+  - "présentiel"
+  - "presentiel"
+  - "sur site"
+  - no remote
+  - no-remote
+  - "not remote"
+  # Séniorité non pertinente
+  - junior
+  - entry-level
+  - entry level
+  - graduate program
+  - intern
+  - stagiaire
+  - alternance
+
+# Green flags — petits bonus (+1 chacun)
+green_flags:
+  # Modalité
+  - remote
+  - "télétravail"
+  - teletravail
+  - freelance
+  - contractor
+  - mission
+  - tjm
+  - "temps partiel"
+  # Séniorité ciblée
+  - senior
+  - lead
+  - "tech lead"
+  - confirmé
+  - principal
+  - staff
+  - expert
+  # Sujets qui m'intéressent
+  - "data lake"
+  - lakehouse
+  - "data platform"
+  - "data mesh"
+  - migration
+  - refonte
+  - "legacy migration"
+  - governance
+  - gouvernance
+  - documentation
+  # Bonus GCP (renforce ma stack secondaire)
+  - migration gcp
+  - "migration cloud"
+
+# Paramètres de scoring
+scoring:
+  # Dénominateur pour normaliser score → match_pct
+  # match_pct = min(100, round(score × 100 / normalizer))
+  normalizer: 18
+
+  # Seuil minimum pour conserver une offre (grade A ≥ 80 %)
+  # Avec normalizer=18, score 14 → match_pct 78, score 15 → 83 → grade A
+  min_score: 14
+
+  # Seuils de grades
+  grades:
+    A: 80   # ≥ 80 % — matching parfait
+    B: 50   # 50-79 %
+    C: 30   # 30-49 %
+    D: 0    # < 30 %
