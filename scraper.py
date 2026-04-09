@@ -133,7 +133,11 @@ ONSITE_TERMS = [
     "no-remote",
 ]
 
-MIN_SCORE_TO_KEEP = 1
+# Grade A threshold: only keep offers that pass ≥80 % match.
+# Score ≥ 8 corresponds to match_pct ≥ 80 (= grade A) via score*10 normalization.
+# This guarantees "perfect match" semantics: title is Data/Analytics Engineer,
+# multiple core skills (GCP/BigQuery/dbt/Airflow/…) match, and remote is present.
+MIN_SCORE_TO_KEEP = 8
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -325,11 +329,25 @@ def normalize_entry(entry, source_name: str, source_homepage: str) -> dict | Non
 
 
 def load_existing(path: Path) -> dict[str, dict]:
+    """Load previously scraped rows, dropping any that no longer meet the
+    current MIN_SCORE_TO_KEEP threshold. This lets threshold changes take
+    effect naturally on the next run (old grade B/C/D rows get purged)."""
     if not path.exists():
         return {}
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
-        return {row["id"]: row for row in reader if row.get("id")}
+        kept: dict[str, dict] = {}
+        for row in reader:
+            if not row.get("id"):
+                continue
+            try:
+                score = int(row.get("score") or 0)
+            except ValueError:
+                score = 0
+            if score < MIN_SCORE_TO_KEEP:
+                continue
+            kept[row["id"]] = row
+    return kept
 
 
 def save(path: Path, rows: Iterable[dict]) -> None:
