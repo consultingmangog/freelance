@@ -1,17 +1,18 @@
 """
 scraper.py — Freelance Job Board scraper.
 
-Fetches RSS feeds from a curated list of remote-tech job boards, scores each
-offer against the user's real experience (loaded from ``profile.yml``), and
-stores results incrementally in ``missions.csv``.
+Fetches RSS feeds from a curated list of remote-tech job boards, plus (if
+credentials are configured) the Adzuna JSON API for the French market, scores
+each offer against the user's real experience (loaded from ``profile.yml``),
+and stores results incrementally in ``missions.csv``.
 
 Scoring is fully content-based: no title weighting. The title is only used as
 part of the searchable text, not as a special signal. The full offer text
 (title + summary + company) is matched against the profile's core_skills,
 secondary_skills, domains, green_flags and red_flags.
 
-Designed to run unattended in GitHub Actions. 100% RSS (no Cloudflare-protected
-HTML endpoints) to keep CI IPs from being blocked.
+Designed to run unattended in GitHub Actions. 100% RSS and REST APIs (no
+Cloudflare-protected HTML endpoints) to keep CI IPs from being blocked.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -387,6 +389,86 @@ def fetch_feed(url: str) -> list:
     return list(parsed.entries)
 
 
+# ---------------------------------------------------------------------------
+# Adzuna source (JSON API) — covers the French market via their aggregation
+# of Pôle Emploi / Indeed FR / Monster FR / Reed / StepStone / etc.
+# Free tier: 250 requests/day. Credentials live in env vars.
+# ---------------------------------------------------------------------------
+
+ADZUNA_BASE_URL = "https://api.adzuna.com/v1/api/jobs"
+
+# Keyword queries used to pull data-engineering offers from Adzuna. Each
+# query is one API request; keep the list tight to stay well under the
+# free-tier budget (250 req/day).
+ADZUNA_QUERIES = [
+    "data engineer",
+    "data lake",
+    "analytics engineer",
+    "hadoop",
+]
+
+
+def fetch_adzuna_offers(country: str = "fr") -> list[dict]:
+    """Query the Adzuna API for jobs matching the profile's role signals.
+
+    Returns a list of pseudo-RSS-entries (dicts with the same keys feedparser
+    exposes: ``title``, ``link``, ``summary``, ``author``, ``published``).
+    Skips gracefully if credentials are missing.
+    """
+    app_id = os.environ.get("ADZUNA_APP_ID")
+    app_key = os.environ.get("ADZUNA_APP_KEY")
+    if not app_id or not app_key:
+        logger.info("Adzuna credentials not set — skipping (set env vars to enable)")
+        return []
+
+    out: list[dict] = []
+    for query in ADZUNA_QUERIES:
+        url = f"{ADZUNA_BASE_URL}/{country}/search/1"
+        params = {
+            "app_id": app_id,
+            "app_key": app_key,
+            "what": query,
+            "results_per_page": 50,
+            "max_days_old": 30,
+            "content-type": "application/json",
+        }
+        logger.info("Fetching Adzuna %s: %s", country, query)
+        try:
+            response = requests.get(url, params=params, timeout=20)
+            response.raise_for_status()
+            data = response.json()
+        except requests.RequestException as exc:
+            logger.warning("Adzuna query failed (%s): %s", query, exc)
+            continue
+        except ValueError as exc:  # JSON decode
+            logger.warning("Adzuna non-JSON response for %s: %s", query, exc)
+            continue
+
+        results = data.get("results") or []
+        logger.info("  → %d results from Adzuna (%s)", len(results), query)
+
+        for item in results:
+            company = (item.get("company") or {}).get("display_name") or ""
+            location = (item.get("location") or {}).get("display_name") or ""
+            summary = item.get("description") or ""
+            if location and location.lower() not in summary.lower():
+                # Surface the location in the summary so the geography
+                # context is visible in the dashboard and the scoring.
+                summary = f"{summary} — {location}"
+
+            out.append(
+                {
+                    "title": item.get("title") or "",
+                    "link": item.get("redirect_url") or "",
+                    "summary": summary,
+                    "author": company,
+                    "published": item.get("created") or "",
+                }
+            )
+
+    return out
+
+
 def fetch_page_text(url: str, timeout: int = 10) -> str:
     """Download the full HTML page of an offer and extract visible text.
 
@@ -568,6 +650,8 @@ def main() -> None:
     logger.info("Loaded %d existing missions (above threshold)", len(existing))
 
     new_count = 0
+
+    # RSS sources
     for source in RSS_SOURCES:
         entries = fetch_feed(source["url"])
         logger.info("  → %d entries from %s", len(entries), source["name"])
@@ -575,6 +659,22 @@ def main() -> None:
         for entry in entries:
             row = normalize_entry(
                 entry, source["name"], source["homepage"], profile
+            )
+            if row is None:
+                continue
+            if row["id"] in existing:
+                continue
+            existing[row["id"]] = row
+            new_count += 1
+
+    # Adzuna (JSON API) — covers the FR market (Pôle Emploi, Indeed FR, ...).
+    # Skips silently if ADZUNA_APP_ID / ADZUNA_APP_KEY env vars aren't set.
+    adzuna_entries = fetch_adzuna_offers(country="fr")
+    if adzuna_entries:
+        logger.info("  → %d total results from Adzuna FR", len(adzuna_entries))
+        for entry in adzuna_entries:
+            row = normalize_entry(
+                entry, "Adzuna FR", "https://www.adzuna.fr", profile
             )
             if row is None:
                 continue

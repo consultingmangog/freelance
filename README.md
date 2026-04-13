@@ -107,6 +107,29 @@ Le workflow a besoin de pouvoir committer le CSV mis à jour :
 2. Section **Workflow permissions** → coche **Read and write permissions**
 3. Sauvegarde
 
+### 2bis. (Optionnel) Activer Adzuna pour le marché FR
+
+Les flux RSS internationaux (Remotive, WWR, RemoteOK, Himalayas, Jobicy)
+couvrent mal le marché français enterprise/freelance. L'adapter Adzuna
+interroge l'API JSON officielle (agrégation de Pôle Emploi, Indeed FR,
+Monster FR, Reed, StepStone) — gratuit jusqu'à 250 req/jour, largement
+suffisant pour 1 run/jour sur 4 requêtes.
+
+1. Crée un compte : https://developer.adzuna.com/signup
+2. Tu reçois `app_id` et `app_key` par mail.
+3. Ajoute-les en secrets GitHub : repo → **Settings → Secrets and
+   variables → Actions → New repository secret** :
+   - `ADZUNA_APP_ID` = ton app_id
+   - `ADZUNA_APP_KEY` = ton app_key
+
+Le workflow `Daily Scrape` injecte automatiquement ces secrets en
+variables d'environnement pour le scraper. **Sans ces secrets, le scraper
+saute Adzuna et tourne uniquement sur les RSS** (pas d'erreur).
+
+Les requêtes lancées sont définies dans `scraper.py` → `ADZUNA_QUERIES` :
+`data engineer`, `data lake`, `analytics engineer`, `hadoop`. Tu peux
+éditer cette liste pour ajuster à ta stratégie.
+
 ### 3. Déployer l'interface sur Streamlit Community Cloud
 
 1. Va sur https://share.streamlit.io et connecte-toi avec GitHub.
