@@ -13,6 +13,38 @@
 #   match_pct = min(100, round(score × 100 / 18))
 #   grade    = A ≥ 80 %, B 50-79 %, C 30-49 %, D < 30 %
 
+# Modalité de travail — OBLIGATOIRE
+# Au moins un terme de remote_terms doit apparaître dans l'offre. Sinon
+# l'offre est rejetée même si tout le reste matche. Couvre télétravail
+# total, partiel, et hybride.
+remote_required: true
+remote_terms:
+  # Anglais
+  - remote
+  - "fully remote"
+  - "100% remote"
+  - "remote-first"
+  - "remote first"
+  - "remote-friendly"
+  - "remote friendly"
+  - "remote work"
+  - "remote position"
+  - "work from home"
+  - wfh
+  - "work from anywhere"
+  - "from anywhere"
+  - distributed
+  - hybrid
+  # Français
+  - "télétravail"
+  - "teletravail"
+  - "télétravail partiel"
+  - "télétravail total"
+  - "télétravail complet"
+  - hybride
+  - "à distance"
+  - distanciel
+
 # Role signals — au moins UN de ces termes doit apparaître dans l'offre
 # (titre ou résumé), sinon elle est rejetée avant scoring. Ça évite qu'une
 # offre "Middleware Engineer" ou "Backend Engineer" passe juste parce qu'elle

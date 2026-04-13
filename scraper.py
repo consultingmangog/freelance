@@ -111,6 +111,8 @@ logger = logging.getLogger("scraper")
 class Profile:
     """Parsed view of profile.yml used for scoring."""
 
+    remote_required: bool = True
+    remote_terms: list[str] = field(default_factory=list)
     role_signals: list[str] = field(default_factory=list)
     core_skills: dict[str, int] = field(default_factory=dict)
     secondary_skills: dict[str, int] = field(default_factory=dict)
@@ -155,6 +157,8 @@ def load_profile(path: Path) -> Profile:
     scoring = data.get("scoring") or {}
     grades = scoring.get("grades") or {}
     return Profile(
+        remote_required=bool(data.get("remote_required", True)),
+        remote_terms=_flag_list(data.get("remote_terms")),
         role_signals=_flag_list(data.get("role_signals")),
         core_skills=_weighted_dict(data.get("core_skills")),
         secondary_skills=_weighted_dict(data.get("secondary_skills")),
@@ -276,6 +280,27 @@ def score_offer(
                 matched_flags=[],
                 rejected=True,
                 reject_reason=f"red-flag:{flag}",
+            )
+
+    # --- Mandatory remote check --------------------------------------------
+    # The user requires explicit remote/hybrid mention in every offer. An
+    # offer that's silent about remote is rejected even if it scores high
+    # otherwise. Strip negations like "no remote" first so they don't
+    # falsely satisfy the check.
+    if profile.remote_required and profile.remote_terms:
+        body_for_remote = _strip_negations(
+            body_low,
+            ["no remote", "no-remote", "not remote", "sans remote", "no télétravail"],
+        )
+        if not any(_matches(term, body_for_remote) for term in profile.remote_terms):
+            return ScoreResult(
+                score=0,
+                match_pct=0,
+                matched_skills=[],
+                matched_domains=[],
+                matched_flags=[],
+                rejected=True,
+                reject_reason="no-remote-mention",
             )
 
     # --- Positive scoring ---------------------------------------------------
