@@ -130,6 +130,19 @@ Les requêtes lancées sont définies dans `scraper.py` → `ADZUNA_QUERIES` :
 `data engineer`, `data lake`, `analytics engineer`, `hadoop`. Tu peux
 éditer cette liste pour ajuster à ta stratégie.
 
+### 2ter. Free-Work (activé par défaut, sans credential)
+
+Free-Work expose une API Hydra publique à
+`https://www.free-work.com/api/job_postings` (pas d'auth requise). Le
+scraper appelle 4 queries (`data engineer`, `hadoop`, `data lake`,
+`analytics engineer`) avec `contracts=contractor` pour ne ramener que
+les missions freelance. Les champs structurés (`remoteMode`, `contracts`,
+`dailySalary`, `experienceLevel`, `skills`, `duration`) sont injectés dans
+le résumé de chaque offre pour que le scoring sémantique fonctionne.
+
+Rien à configurer : ça tourne automatiquement. Les queries et l'URL de
+base sont dans `scraper.py` → `FREEWORK_QUERIES` / `FREEWORK_API_URL`.
+
 ### 3. Déployer l'interface sur Streamlit Community Cloud
 
 1. Va sur https://share.streamlit.io et connecte-toi avec GitHub.

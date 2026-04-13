@@ -496,6 +496,142 @@ def fetch_adzuna_offers(country: str = "fr") -> list[dict]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Free-Work source (Hydra / API Platform JSON) — FR freelance marketplace
+# covering TJM-based missions (CONTRACTOR only). No auth required; the API
+# is publicly readable at /api/job_postings. Rich structured fields
+# (remoteMode, contracts, dailySalary, experienceLevel) are synthesised
+# into the description so the text-based profile scoring picks them up
+# uniformly with the other sources.
+# ---------------------------------------------------------------------------
+
+FREEWORK_API_URL = "https://www.free-work.com/api/job_postings"
+FREEWORK_OFFER_BASE = "https://www.free-work.com/fr/tech-it/job-mission"
+FREEWORK_HOMEPAGE = "https://www.free-work.com"
+
+FREEWORK_QUERIES = [
+    "data engineer",
+    "hadoop",
+    "data lake",
+    "analytics engineer",
+]
+
+
+def _freework_describe_remote(mode: str | None) -> str:
+    """Convert Free-Work's ``remoteMode`` enum to plain text our scoring reads."""
+    if mode == "full":
+        return "Télétravail total (full remote)."
+    if mode == "partial":
+        return "Télétravail partiel (hybride)."
+    if mode == "none":
+        return "Présentiel uniquement (on-site, no remote)."
+    return ""
+
+
+def fetch_freework_offers() -> list[dict]:
+    """Query Free-Work's public API for contractor missions matching profile
+    keywords. Returns pseudo-RSS entries (same shape as feedparser entries)
+    so they flow through the existing normalize_entry pipeline.
+    """
+    out: list[dict] = []
+    for query in FREEWORK_QUERIES:
+        params = {
+            "contracts": "contractor",
+            "searchKeywords": query,
+            "itemsPerPage": 50,
+        }
+        logger.info("Fetching Free-Work: %s", query)
+        try:
+            response = requests.get(
+                FREEWORK_API_URL,
+                params=params,
+                headers={
+                    "User-Agent": USER_AGENT,
+                    "Accept": "application/ld+json",
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except requests.RequestException as exc:
+            logger.warning("Free-Work query failed (%s): %s", query, exc)
+            continue
+        except ValueError as exc:
+            logger.warning("Free-Work non-JSON response for %s: %s", query, exc)
+            continue
+
+        members = data.get("hydra:member") or []
+        logger.info("  → %d results from Free-Work (%s)", len(members), query)
+
+        for item in members:
+            if not item.get("published"):
+                continue
+
+            title = item.get("title") or ""
+            slug = item.get("slug") or ""
+            if not title or not slug:
+                continue
+
+            company = (item.get("company") or {}).get("name") or ""
+
+            # Synthesize a rich description from the structured fields so
+            # our text-based scoring has every signal it needs.
+            parts: list[str] = []
+            if item.get("description"):
+                parts.append(item["description"])
+            if item.get("candidateProfile"):
+                parts.append(item["candidateProfile"])
+            if item.get("companyDescription"):
+                parts.append(item["companyDescription"])
+
+            contracts = item.get("contracts") or []
+            if "contractor" in contracts:
+                parts.append("Freelance / mission contractor.")
+            if "permanent" in contracts:
+                parts.append("Contrat permanent possible.")
+
+            remote_note = _freework_describe_remote(item.get("remoteMode"))
+            if remote_note:
+                parts.append(remote_note)
+
+            daily = item.get("dailySalary")
+            if daily:
+                parts.append(f"TJM: {daily}.")
+
+            duration = item.get("duration")
+            duration_period = item.get("durationPeriod")
+            if duration and duration_period:
+                parts.append(f"Durée: {duration} {duration_period}.")
+
+            experience = item.get("experienceLevel")
+            if experience:
+                parts.append(f"Séniorité: {experience}.")
+
+            location = (item.get("location") or {}).get("locality") or ""
+            if location:
+                parts.append(f"Lieu: {location}.")
+
+            skills = item.get("skills") or []
+            skill_names = [s.get("name") for s in skills if s.get("name")]
+            if skill_names:
+                parts.append("Skills: " + ", ".join(skill_names) + ".")
+
+            summary = " ".join(p for p in parts if p)
+            offer_url = f"{FREEWORK_OFFER_BASE}/{slug}"
+
+            out.append(
+                {
+                    "title": title,
+                    "link": offer_url,
+                    "summary": summary,
+                    "author": company,
+                    "published": item.get("publishedAt") or item.get("createdAt") or "",
+                }
+            )
+
+    return out
+
+
 def fetch_page_text(url: str, timeout: int = 10) -> str:
     """Download the full HTML page of an offer and extract visible text.
 
@@ -686,6 +822,27 @@ def main() -> None:
         for entry in entries:
             row = normalize_entry(
                 entry, source["name"], source["homepage"], profile
+            )
+            if row is None:
+                continue
+            if row["id"] in existing:
+                continue
+            existing[row["id"]] = row
+            new_count += 1
+
+    # Free-Work (Hydra JSON API) — FR freelance marketplace. The API returns
+    # structured fields (remoteMode, contracts, dailySalary, ...) which are
+    # already merged into each entry's summary; hydration would add no value.
+    freework_entries = fetch_freework_offers()
+    if freework_entries:
+        logger.info("  → %d total results from Free-Work", len(freework_entries))
+        for entry in freework_entries:
+            row = normalize_entry(
+                entry,
+                "Free-Work",
+                FREEWORK_HOMEPAGE,
+                profile,
+                hydrate=False,
             )
             if row is None:
                 continue
