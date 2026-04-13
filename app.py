@@ -272,11 +272,19 @@ else:
         }
     )
 
-    st.dataframe(
+    st.caption(
+        "Clique sur une ligne pour afficher le détail de l'offre + lien direct "
+        "vers la page de candidature."
+    )
+
+    table_event = st.dataframe(
         display,
         hide_index=True,
         use_container_width=True,
-        height=640,
+        height=520,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="missions_table",
         column_config={
             "Chances %": st.column_config.ProgressColumn(
                 "Chances d'être retenu",
@@ -310,3 +318,68 @@ else:
             ),
         },
     )
+
+    # ----------------------------------------------------------------------
+    # Detail panel — appears below the table when a row is selected
+    # ----------------------------------------------------------------------
+
+    selected_rows = (
+        table_event.selection.rows
+        if hasattr(table_event, "selection")
+        else []
+    )
+
+    if selected_rows:
+        idx = selected_rows[0]
+        row = filtered.iloc[idx]
+
+        st.divider()
+
+        # Header line: title + grade badge
+        header_col, badge_col = st.columns([5, 1])
+        with header_col:
+            st.markdown(f"### {row['title']}")
+            st.caption(
+                f"**{row['company']}**  ·  source : **{row['source']}**  ·  "
+                f"scrapée le {row['date_scraped']}"
+            )
+        with badge_col:
+            grade = row["match_grade"]
+            pct = int(row["match_pct"])
+            st.metric(label=f"Grade {grade}", value=f"{pct}%")
+
+        # Action buttons (the main reason this panel exists)
+        action_col1, action_col2, _ = st.columns([2, 2, 4])
+        with action_col1:
+            st.link_button(
+                "📨 Voir l'offre / Postuler ↗",
+                url=row["url"],
+                use_container_width=True,
+                type="primary",
+            )
+        with action_col2:
+            if row.get("source_url"):
+                st.link_button(
+                    "🔗 Site source ↗",
+                    url=row["source_url"],
+                    use_container_width=True,
+                )
+
+        # Skills + score breakdown
+        st.markdown("**Skills matchés depuis ton profil :**")
+        skills = row.get("matched_skills") or "—"
+        st.write(skills)
+
+        all_keywords = row.get("keywords") or ""
+        if all_keywords and all_keywords != skills:
+            with st.expander("Tous les keywords matchés (skills + domaines + flags)"):
+                st.write(all_keywords)
+
+        # Full summary (often longer than what fits in the table cell)
+        st.markdown("**Résumé de l'offre :**")
+        summary_text = row.get("summary") or "_(Pas de résumé fourni par la source.)_"
+        st.write(summary_text)
+
+        # Raw URL displayed clearly (in case the user wants to copy it)
+        st.caption(f"URL : `{row['url']}`")
+
