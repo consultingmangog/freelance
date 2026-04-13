@@ -45,6 +45,35 @@ remote_terms:
   - "à distance"
   - distanciel
 
+# Type de contrat — OBLIGATOIRE freelance / contractor / mission
+# Au moins un terme de freelance_terms doit apparaître sinon l'offre est
+# rejetée. Couvre freelance, contractor, mission ponctuelle/longue, TJM,
+# indépendant, régie, CDD de mission, prestation.
+freelance_required: true
+freelance_terms:
+  # Français
+  - freelance
+  - indépendant
+  - "indépendante"
+  - mission
+  - "mission longue"
+  - "mission courte"
+  - tjm
+  - prestataire
+  - prestation
+  - régie
+  - portage
+  - "portage salarial"
+  - consultant
+  # Anglais
+  - contractor
+  - contract
+  - "contract role"
+  - "contract position"
+  - "day rate"
+  - "daily rate"
+  - "self-employed"
+
 # Role signals — au moins UN de ces termes doit apparaître dans l'offre
 # (titre ou résumé), sinon elle est rejetée avant scoring. Ça évite qu'une
 # offre "Middleware Engineer" ou "Backend Engineer" passe juste parce qu'elle

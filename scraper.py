@@ -115,6 +115,8 @@ class Profile:
 
     remote_required: bool = True
     remote_terms: list[str] = field(default_factory=list)
+    freelance_required: bool = True
+    freelance_terms: list[str] = field(default_factory=list)
     role_signals: list[str] = field(default_factory=list)
     core_skills: dict[str, int] = field(default_factory=dict)
     secondary_skills: dict[str, int] = field(default_factory=dict)
@@ -161,6 +163,8 @@ def load_profile(path: Path) -> Profile:
     return Profile(
         remote_required=bool(data.get("remote_required", True)),
         remote_terms=_flag_list(data.get("remote_terms")),
+        freelance_required=bool(data.get("freelance_required", True)),
+        freelance_terms=_flag_list(data.get("freelance_terms")),
         role_signals=_flag_list(data.get("role_signals")),
         core_skills=_weighted_dict(data.get("core_skills")),
         secondary_skills=_weighted_dict(data.get("secondary_skills")),
@@ -305,6 +309,22 @@ def score_offer(
                 reject_reason="no-remote-mention",
             )
 
+    # --- Mandatory freelance / contract check -------------------------------
+    # User wants only contractor / freelance missions, not permanent roles.
+    # At least one of the configured freelance_terms (freelance, mission,
+    # TJM, contractor, prestation, ...) must appear somewhere in the offer.
+    if profile.freelance_required and profile.freelance_terms:
+        if not any(_matches(term, body_low) for term in profile.freelance_terms):
+            return ScoreResult(
+                score=0,
+                match_pct=0,
+                matched_skills=[],
+                matched_domains=[],
+                matched_flags=[],
+                rejected=True,
+                reject_reason="no-freelance-mention",
+            )
+
     # --- Positive scoring ---------------------------------------------------
     score = 0
     matched_skills: list[str] = []
@@ -399,12 +419,19 @@ ADZUNA_BASE_URL = "https://api.adzuna.com/v1/api/jobs"
 
 # Keyword queries used to pull data-engineering offers from Adzuna. Each
 # query is one API request; keep the list tight to stay well under the
-# free-tier budget (250 req/day).
+# free-tier budget (250 req/day). We include freelance-targeted queries
+# since the profile requires freelance/contractor offers.
 ADZUNA_QUERIES = [
+    # Rôle-centric (large, freelance filter applied downstream)
     "data engineer",
     "data lake",
     "analytics engineer",
     "hadoop",
+    # Freelance-targeted (pulls explicit contractor / mission listings)
+    "freelance data engineer",
+    "mission data engineer",
+    "freelance hadoop",
+    "tjm data",
 ]
 
 
