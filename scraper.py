@@ -669,12 +669,19 @@ def main() -> None:
 
     # Adzuna (JSON API) — covers the FR market (Pôle Emploi, Indeed FR, ...).
     # Skips silently if ADZUNA_APP_ID / ADZUNA_APP_KEY env vars aren't set.
+    # Adzuna API returns rich descriptions (500-2000 chars) directly, so
+    # hydration is disabled for this source — fetching the redirect URL
+    # would double the request count and risk timing out the workflow.
     adzuna_entries = fetch_adzuna_offers(country="fr")
     if adzuna_entries:
         logger.info("  → %d total results from Adzuna FR", len(adzuna_entries))
         for entry in adzuna_entries:
             row = normalize_entry(
-                entry, "Adzuna FR", "https://www.adzuna.fr", profile
+                entry,
+                "Adzuna FR",
+                "https://www.adzuna.fr",
+                profile,
+                hydrate=False,
             )
             if row is None:
                 continue
