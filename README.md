@@ -107,6 +107,42 @@ Le workflow a besoin de pouvoir committer le CSV mis à jour :
 2. Section **Workflow permissions** → coche **Read and write permissions**
 3. Sauvegarde
 
+### 2bis. (Optionnel) Activer Adzuna pour le marché FR
+
+Les flux RSS internationaux (Remotive, WWR, RemoteOK, Himalayas, Jobicy)
+couvrent mal le marché français enterprise/freelance. L'adapter Adzuna
+interroge l'API JSON officielle (agrégation de Pôle Emploi, Indeed FR,
+Monster FR, Reed, StepStone) — gratuit jusqu'à 250 req/jour, largement
+suffisant pour 1 run/jour sur 4 requêtes.
+
+1. Crée un compte : https://developer.adzuna.com/signup
+2. Tu reçois `app_id` et `app_key` par mail.
+3. Ajoute-les en secrets GitHub : repo → **Settings → Secrets and
+   variables → Actions → New repository secret** :
+   - `ADZUNA_APP_ID` = ton app_id
+   - `ADZUNA_APP_KEY` = ton app_key
+
+Le workflow `Daily Scrape` injecte automatiquement ces secrets en
+variables d'environnement pour le scraper. **Sans ces secrets, le scraper
+saute Adzuna et tourne uniquement sur les RSS** (pas d'erreur).
+
+Les requêtes lancées sont définies dans `scraper.py` → `ADZUNA_QUERIES` :
+`data engineer`, `data lake`, `analytics engineer`, `hadoop`. Tu peux
+éditer cette liste pour ajuster à ta stratégie.
+
+### 2ter. Free-Work (activé par défaut, sans credential)
+
+Free-Work expose une API Hydra publique à
+`https://www.free-work.com/api/job_postings` (pas d'auth requise). Le
+scraper appelle 4 queries (`data engineer`, `hadoop`, `data lake`,
+`analytics engineer`) avec `contracts=contractor` pour ne ramener que
+les missions freelance. Les champs structurés (`remoteMode`, `contracts`,
+`dailySalary`, `experienceLevel`, `skills`, `duration`) sont injectés dans
+le résumé de chaque offre pour que le scoring sémantique fonctionne.
+
+Rien à configurer : ça tourne automatiquement. Les queries et l'URL de
+base sont dans `scraper.py` → `FREEWORK_QUERIES` / `FREEWORK_API_URL`.
+
 ### 3. Déployer l'interface sur Streamlit Community Cloud
 
 1. Va sur https://share.streamlit.io et connecte-toi avec GitHub.
@@ -118,6 +154,35 @@ Le workflow a besoin de pouvoir committer le CSV mis à jour :
 L'URL publique de type `https://<ton-app>.streamlit.app` est générée en
 quelques secondes. Chaque commit du scraper (via GitHub Actions) rafraîchit
 automatiquement le CSV ; le cache Streamlit expire toutes les 5 minutes.
+
+### 4. (Optionnel) Trigger manuel du scraper depuis Streamlit
+
+Le dashboard expose deux boutons dans la sidebar :
+
+- **⟳ Rafraîchir** — vide le cache et relit `missions.csv` immédiatement.
+- **▶ Scraper** — déclenche le workflow `Daily Scrape` via l'API GitHub
+  (`workflow_dispatch`). Nécessite un token côté Streamlit Cloud.
+
+Pour activer le bouton **▶ Scraper** :
+
+1. Crée un Personal Access Token GitHub (fine-grained) avec la permission
+   **Actions: Read and write** sur le dépôt. https://github.com/settings/personal-access-tokens/new
+2. Dans Streamlit Community Cloud → ton app → **Settings → Secrets**, ajoute :
+
+   ```toml
+   GITHUB_TOKEN = "ghp_xxxxxxxxxxxx"
+   GITHUB_REPO  = "consultingmangog/freelance"
+   GITHUB_BRANCH = "claude/job-board-automation-yTvBX"   # optionnel
+   ```
+
+3. Sauvegarde. Le bouton fonctionne instantanément, sans redéployer.
+
+Sans ces secrets, le bouton affiche simplement un message t'invitant à les
+configurer — l'app continue de fonctionner normalement.
+
+Tu peux aussi toujours déclencher le workflow manuellement depuis l'onglet
+**Actions → Daily Scrape → Run workflow** sur GitHub, ce qui ne nécessite
+aucun secret.
 
 ## Dépendances
 
