@@ -36,6 +36,9 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run scraper
+        env:
+          ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
+          ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
         run: python scraper.py
 
       - name: Commit updated missions.csv
@@ -45,7 +48,24 @@ jobs:
           git add missions.csv
           if git diff --staged --quiet; then
             echo "No changes to commit."
-          else
-            git commit -m "chore: update missions.csv [skip ci]"
-            git push
+            exit 0
           fi
+          git commit -m "chore: update missions.csv [skip ci]"
+          # Push with rebase-on-conflict + retry. Concurrent dispatches
+          # (cron + manual click) can both checkout the same SHA, write
+          # different missions.csv, and then race to push. The loser
+          # rebases on the new HEAD and tries again.
+          for attempt in 1 2 3 4; do
+            if git push; then
+              echo "Push succeeded on attempt ${attempt}."
+              exit 0
+            fi
+            echo "Push attempt ${attempt} rejected, rebasing on remote and retrying..."
+            git pull --rebase origin "${GITHUB_REF_NAME}" || {
+              echo "Rebase failed — aborting."
+              exit 1
+            }
+            sleep $((attempt * 2))
+          done
+          echo "Push still failing after 4 attempts." >&2
+          exit 1
